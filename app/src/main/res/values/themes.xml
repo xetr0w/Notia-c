@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.Notia" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorControlNormal">#FF000000</item>
+    </style>
+</resources>
