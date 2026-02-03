@@ -6,14 +6,13 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import com.notianotes.app.freehand.Point
 
 /**
- * Simplified Freehand Renderer
- * Creates smooth paths from outline points using quadratic bezier curves
+ * FreehandRenderer - V2
+ * FIX: Artık quadraticBezierTo ile yumuşatma yapılmıyor.
+ * FreehandAlgorithm zaten detaylı outline (8-16 segment ile yaylar/daireler) üretiyor.
+ * Bezier yumuşatması stroke uçlarını "yiyordu" ve titremye neden oluyordu.
  */
 object FreehandRenderer {
 
-    /**
-     * Draw outline as a smooth filled path
-     */
     fun drawOutline(
         drawScope: DrawScope,
         outline: List<Point>,
@@ -22,7 +21,7 @@ object FreehandRenderer {
     ) {
         if (outline.size < 3) return
         
-        val path = createSmoothPath(outline)
+        val path = createPathFromOutline(outline)
         drawScope.drawPath(
             path = path,
             color = if (isEraser) Color.White else color
@@ -30,49 +29,34 @@ object FreehandRenderer {
     }
 
     /**
-     * Create a smooth closed path from outline points
-     * Uses quadratic bezier curves for smooth edges
+     * Outline noktalarını doğrudan lineTo ile birleştir.
+     * Algoritma zaten daireler için 16, yaylar için 8 nokta koyduğu için
+     * bu çizgiler göze "kare" gelmeyecek, gayet yuvarlak görünecektir.
      */
     fun createSmoothPath(outline: List<Point>): Path {
+        return createPathFromOutline(outline)
+    }
+    
+    private fun createPathFromOutline(outline: List<Point>): Path {
         if (outline.isEmpty()) return Path()
-        
-        if (outline.size < 3) {
-            // Too few points, draw simple polygon
-            return Path().apply {
-                moveTo(outline.first().x, outline.first().y)
-                outline.drop(1).forEach { lineTo(it.x, it.y) }
-                close()
-            }
-        }
         
         val path = Path()
         
-        // Start at midpoint between last and first point
-        val firstMid = midpoint(outline.last(), outline.first())
-        path.moveTo(firstMid.x, firstMid.y)
+        // İlk noktaya git
+        val start = outline.first()
+        path.moveTo(start.x, start.y)
         
-        // Draw smooth curves through all points
-        for (i in outline.indices) {
-            val current = outline[i]
-            val next = outline[(i + 1) % outline.size]
-            val mid = midpoint(current, next)
-            
-            // Quadratic bezier: current point is control point, midpoint is end
-            path.quadraticBezierTo(current.x, current.y, mid.x, mid.y)
+        // Diğer tüm noktaları düz çizgilerle birleştir
+        for (i in 1 until outline.size) {
+            val p = outline[i]
+            path.lineTo(p.x, p.y)
         }
         
         path.close()
         return path
     }
     
-    /**
-     * Create path for caching (same as createSmoothPath)
-     */
     fun createCachedPath(outline: List<Point>): Path {
-        return createSmoothPath(outline)
-    }
-    
-    private fun midpoint(a: Point, b: Point): Point {
-        return Point((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+        return createPathFromOutline(outline)
     }
 }

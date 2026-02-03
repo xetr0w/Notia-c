@@ -106,13 +106,31 @@ object FreehandAlgorithm {
     }
     
     private fun getNormal(points: List<StrokePoint>, index: Int): Point {
-        val prev = if (index > 0) points[index - 1].toPoint() else points[index].toPoint()
-        val next = if (index < points.lastIndex) points[index + 1].toPoint() else points[index].toPoint()
-        
+        // Liste çok kısaysa varsayılan döndür
+        if (points.size < 2) return Point(0f, 1f)
+
+        // Güvenli prev/next seçimi
+        val prevIndex = (index - 1).coerceAtLeast(0)
+        val nextIndex = (index + 1).coerceAtMost(points.lastIndex)
+
+        var prev = points[prevIndex].toPoint()
+        var next = points[nextIndex].toPoint()
+
+        // Eğer prev ve next aynıysa (başlangıç/bitiş noktalarında olabilir),
+        // biraz daha uzağa bakmaya çalışalım
+        if (prev.distanceTo(next) < 0.001f) {
+            if (nextIndex < points.lastIndex) {
+                next = points[nextIndex + 1].toPoint()
+            } else if (prevIndex > 0) {
+                prev = points[prevIndex - 1].toPoint()
+            }
+        }
+
         val dx = next.x - prev.x
         val dy = next.y - prev.y
         val len = sqrt(dx * dx + dy * dy)
         
+        // Hala 0 ise (tek noktaya çoklu basım), varsayılan dik vektör
         return if (len < 0.001f) {
             Point(0f, 1f)
         } else {
