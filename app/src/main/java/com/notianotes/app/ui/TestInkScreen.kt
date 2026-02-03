@@ -6,7 +6,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,40 +14,21 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.ink.brush.Brush
-import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
-import androidx.ink.strokes.Stroke
-import com.notianotes.app.ink.CustomBrushes
 import com.notianotes.app.ink.DrawingSurface
-import com.notianotes.app.ink.NotiaBrushes
-import com.notianotes.app.ink.NotiaTextureBitmapStore
+import com.notianotes.app.ink.FreehandStroke
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TestInkScreen() {
     val context = LocalContext.current
-    val strokes = remember { mutableStateListOf<Stroke>() }
-    val textureStore = remember { NotiaTextureBitmapStore(context) }
-    val customBrushes = remember { CustomBrushes.getBrushes(context) }
-    val canvasStrokeRenderer = remember { CanvasStrokeRenderer.create(textureStore = textureStore) }
+    
+    // New State for Custom Engine
+    val strokes = remember { mutableStateListOf<FreehandStroke>() }
 
     // State for specific brush properties
     var selectedBrushType by remember { mutableStateOf("Fountain") }
     var brushSize by remember { mutableFloatStateOf(4f) }
     var brushColor by remember { mutableStateOf(Color.Black) }
-
-    // Derive currentBrush from state
-    val currentBrush = remember(selectedBrushType, brushSize, brushColor) {
-        when (selectedBrushType) {
-            "Fountain" -> NotiaBrushes.fountainPen(brushColor, brushSize)
-            "Ballpoint" -> NotiaBrushes.ballpointPen(brushColor, brushSize)
-            "Highlighter" -> NotiaBrushes.highlighter(brushColor, brushSize) // Note: Highlighter defaults to large size, maybe scale?
-            "Marker" -> NotiaBrushes.roundMarker(brushColor, brushSize)
-            "Calligraphy" -> NotiaBrushes.calligraphy(customBrushes, brushColor, brushSize)
-            "Pencil" -> NotiaBrushes.pencil(brushColor, brushSize)
-            else -> NotiaBrushes.fountainPen(brushColor, brushSize)
-        }
-    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -59,9 +39,11 @@ fun TestInkScreen() {
                     selectedType = selectedBrushType,
                     onTypeSelected = { type -> 
                         selectedBrushType = type 
-                        // Update default sizes for specific types if needed
+                        // Update default sizes for specific types
                         if (type == "Highlighter" || type == "Marker") {
-                            if (brushSize < 10f) brushSize = 18f
+                            if (brushSize < 10f) brushSize = 25f
+                        } else if (type == "Pencil") {
+                            brushSize = 5f
                         } else {
                             if (brushSize > 10f) brushSize = 4f
                         }
@@ -86,19 +68,34 @@ fun TestInkScreen() {
         ) {
             DrawingSurface(
                 strokes = strokes,
-                canvasStrokeRenderer = canvasStrokeRenderer,
-                textureStore = textureStore,
-                onStrokesFinished = { newStrokes -> strokes.addAll(newStrokes) },
-                onErase = { _, _ -> },
-                onEraseStart = {},
-                onEraseEnd = {},
-                currentBrush = currentBrush,
-                onGetNextBrush = { currentBrush },
-                isEraserMode = false,
+                currentBrushType = selectedBrushType,
+                currentBrushSize = brushSize,
+                currentBrushColor = brushColor,
                 backgroundImageUri = null,
-                onStartDrag = {},
                 modifier = Modifier.fillMaxSize()
             )
+            
+            // Action Buttons
+            Column(
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Clear Button
+                FloatingActionButton(
+                    onClick = { strokes.clear() },
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                ) {
+                    Text("Clear")
+                }
+                
+                // Undo Button
+                FloatingActionButton(
+                    onClick = { if (strokes.isNotEmpty()) strokes.removeAt(strokes.lastIndex) },
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text("Undo")
+                }
+            }
         }
     }
 }
@@ -169,12 +166,12 @@ fun BrushSettingsBar(
         
         Spacer(modifier = Modifier.width(16.dp))
         
-        Text("Boyut: ${size.toInt()}", style = MaterialTheme.typography.bodySmall)
+        Text("Size: ${size.toInt()}", style = MaterialTheme.typography.bodySmall)
         
         Slider(
             value = size,
             onValueChange = onSizeChange,
-            valueRange = 1f..30f,
+            valueRange = 1f..50f,
             modifier = Modifier.weight(1f)
         )
     }

@@ -1,145 +1,67 @@
 package com.notianotes.app.ink
 
 import android.annotation.SuppressLint
-import android.graphics.Matrix
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.toRect
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.withSaveLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.core.graphics.withSave
-import androidx.ink.authoring.compose.InProgressStrokes
-import androidx.ink.brush.Brush
-import androidx.ink.brush.StockBrushes
-import androidx.ink.brush.TextureBitmapStore
-import androidx.ink.brush.compose.createWithComposeColor
-import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
-import androidx.ink.strokes.Stroke
-import coil3.compose.AsyncImage
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
+import com.notianotes.app.freehand.FreehandAlgorithm
+import com.notianotes.app.freehand.StrokePoint
+import com.notianotes.app.render.FreehandRenderer
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.calculateCentroidSize
-import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 
+/**
+ * Completed stroke with cached path
+ */
+data class FreehandStroke(
+    val points: List<StrokePoint>,
+    val color: Color,
+    val size: Float,
+    val type: String,
+    val cachedPath: Path
+)
 
-@SuppressLint("RestrictedApi", "VisibleForTests")
+@SuppressLint("RestrictedApi")
 @Composable
 fun DrawingSurface(
-    strokes: List<Stroke>,
-    canvasStrokeRenderer: CanvasStrokeRenderer,
-    textureStore: TextureBitmapStore? = null,
-    onStrokesFinished: (List<Stroke>) -> Unit,
-    onErase: (offsetX: Float, offsetY: Float) -> Unit,
-    onEraseStart: () -> Unit,
-    onEraseEnd: () -> Unit,
-    currentBrush: Brush,
-    onGetNextBrush: () -> Brush,
-    isEraserMode: Boolean,
+    strokes: MutableList<FreehandStroke>,
+    currentBrushType: String,
+    currentBrushSize: Float,
+    currentBrushColor: Color,
     backgroundImageUri: String?,
-    onStartDrag: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var zoom by remember { mutableStateOf(1f) }
-    var pan by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    // Transform state
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
 
-    // Gesture Logic for Zoom/Pan (Input Separation)
-    // We apply this to the Content Wrapper.
-    // It captures FINGERS in the INITIAL pass to:
-    // 1. Perform Zoom/Pan (since it sees them first)
-    // 2. CONSUME them (so InProgressStrokes doesn't see them)
-    // It ignores STYLUS (letting InProgressStrokes see them)
+    // Drawing state - use SnapshotStateList for proper recomposition
+    val currentPoints = remember { mutableStateListOf<StrokePoint>() }
+    var isDrawing by remember { mutableStateOf(false) }
     
-    val zoomModifier = Modifier.pointerInput(Unit) {
-        awaitEachGesture {
-            var rotation = 0f
-            var zoomFactor = 1f
-            var panFactor = androidx.compose.ui.geometry.Offset.Zero
-            var pastTouchSlop = false
-            val touchSlop = viewConfiguration.touchSlop
-
-            awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
-            
-            do {
-                val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
-                
-                // FILTER: Only process if ALL pointers are TOUCH (Finger)
-                val isFinger = event.changes.all { it.type == androidx.compose.ui.input.pointer.PointerType.Touch }
-                val isStylus = event.changes.any { it.type == androidx.compose.ui.input.pointer.PointerType.Stylus }
-
-                if (isStylus) {
-                     // If stylus, do NOTHING. Do not consume. 
-                     // Let it propagate to InProgressStrokes (Child).
-                     // We just continue monitoring.
-                     continue
-                }
-                
-                // If Finger, we handle Zoom/Pan and CONSUME.
-                val canceled = event.changes.any { it.isConsumed }
-                if (!canceled && isFinger) {
-                    val zoomChange = event.calculateZoom()
-                    val panChange = event.calculatePan()
-                    
-                    if (!pastTouchSlop) {
-                        zoomFactor *= zoomChange
-                        panFactor += panChange
-                        
-                        val centroidSize = event.calculateCentroidSize(useCurrent = false)
-                        val zoomMotion = kotlin.math.abs(1 - zoomFactor) * centroidSize
-                        val panMotion = panFactor.getDistance()
-                        
-                        if (zoomMotion > touchSlop || panMotion > touchSlop) {
-                            pastTouchSlop = true
-                        }
-                    }
-                    
-                    if (pastTouchSlop) {
-                         val centroid = event.calculateCentroid(useCurrent = false)
-                         if (zoomChange != 1f || panChange != androidx.compose.ui.geometry.Offset.Zero) {
-                             // Apply to State
-                             val oldZoom = zoom
-                             val newZoom = (zoom * zoomChange).coerceIn(1f, 10f)
-                             val effectiveZoomChange = newZoom / oldZoom
-                             
-                             val x = (pan.x - centroid.x) * effectiveZoomChange + centroid.x
-                             val y = (pan.y - centroid.y) * effectiveZoomChange + centroid.y
-                             
-                             zoom = newZoom
-                             pan = androidx.compose.ui.geometry.Offset(x + panChange.x, y + panChange.y)
-                         }
-                         
-                         event.changes.forEach {
-                             if (it.positionChanged()) {
-                                 it.consume()
-                             }
-                         }
-                    }
-                }
-            } while (!event.changes.all { !it.pressed } && !event.changes.any { it.isConsumed })
-        }
+    // Precompute display color
+    val displayColor = remember(currentBrushType, currentBrushColor) {
+        getDisplayColor(currentBrushType, currentBrushColor)
+    }
+    
+    // Precompute thinning factor
+    val thinning = remember(currentBrushType) {
+        getThinningFactor(currentBrushType)
     }
 
-    Box(
-        modifier = modifier.fillMaxSize()
-    ) {
-        // Transformable Content Wrapper
+    Box(modifier = modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -150,101 +72,160 @@ fun DrawingSurface(
                     translationY = pan.y
                     transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
                 }
-                .then(zoomModifier)
+                // Zoom/Pan handler
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        do {
+                            val event = awaitPointerEvent()
+                            val changes = event.changes
+                            
+                            if (changes.any { it.type == PointerType.Stylus }) continue
+                            
+                            if (changes.all { it.type == PointerType.Touch } && changes.size >= 2) {
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val centroid = event.calculateCentroid(useCurrent = false)
+                                
+                                if (zoomChange != 1f || panChange != Offset.Zero) {
+                                    val newZoom = (zoom * zoomChange).coerceIn(1f, 10f)
+                                    val zoomFactor = newZoom / zoom
+                                    
+                                    pan = Offset(
+                                        (pan.x - centroid.x) * zoomFactor + centroid.x + panChange.x,
+                                        (pan.y - centroid.y) * zoomFactor + centroid.y + panChange.y
+                                    )
+                                    zoom = newZoom
+                                    changes.forEach { it.consume() }
+                                }
+                            }
+                        } while (changes.any { it.pressed })
+                    }
+                }
+                // Drawing handler
+                .pointerInput(currentBrushType, currentBrushSize, currentBrushColor) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        
+                        if (down.type == PointerType.Stylus) {
+                            // Start drawing
+                            isDrawing = true
+                            currentPoints.clear()
+                            currentPoints.add(StrokePoint(
+                                x = down.position.x,
+                                y = down.position.y,
+                                pressure = down.pressure.coerceIn(0.1f, 1f),
+                                time = System.currentTimeMillis()
+                            ))
+                            down.consume()
+                            
+                            // Continue drawing
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                
+                                if (!change.pressed) break
+                                
+                                // Add point if moved enough
+                                val last = currentPoints.lastOrNull()
+                                val dx = change.position.x - (last?.x ?: 0f)
+                                val dy = change.position.y - (last?.y ?: 0f)
+                                
+                                if (last == null || (dx * dx + dy * dy) > 4f) { // min 2px distance
+                                    currentPoints.add(StrokePoint(
+                                        x = change.position.x,
+                                        y = change.position.y,
+                                        pressure = change.pressure.coerceIn(0.1f, 1f),
+                                        time = System.currentTimeMillis()
+                                    ))
+                                }
+                                change.consume()
+                            }
+                            
+                            // End drawing - commit stroke
+                            isDrawing = false
+                            
+                            if (currentPoints.isNotEmpty()) {
+                                val points = currentPoints.toList()
+                                val outline = FreehandAlgorithm.getStrokeOutline(
+                                    points = points,
+                                    baseSize = currentBrushSize,
+                                    thinning = thinning
+                                )
+                                
+                                if (outline.isNotEmpty()) {
+                                    val path = FreehandRenderer.createSmoothPath(outline)
+                                    strokes.add(FreehandStroke(
+                                        points = points,
+                                        color = displayColor,
+                                        size = currentBrushSize,
+                                        type = currentBrushType,
+                                        cachedPath = path
+                                    ))
+                                }
+                            }
+                            currentPoints.clear()
+                        }
+                    }
+                }
         ) {
+            // Background image
             backgroundImageUri?.let {
                 AsyncImage(
                     model = it,
-                    contentDescription = "Background Image",
+                    contentDescription = "Background",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
             }
 
+            // Canvas for drawing strokes
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val canvas = drawContext.canvas.nativeCanvas
+                // Draw completed strokes
                 strokes.forEach { stroke ->
-                    val blendMode = if (stroke.brush.family == StockBrushes.highlighter()) {
-                        BlendMode.Multiply
-                    } else {
-                        BlendMode.SrcOver
-                    }
+                    drawPath(stroke.cachedPath, stroke.color)
+                }
+                
+                // Draw current stroke (wet/live)
+                // Read the list to trigger recomposition
+                val points = currentPoints.toList()
+                if (points.isNotEmpty()) {
+                    val outline = FreehandAlgorithm.getStrokeOutline(
+                        points = points,
+                        baseSize = currentBrushSize,
+                        thinning = thinning
+                    )
                     
-                   val paint = androidx.compose.ui.graphics.Paint().apply { this.blendMode = blendMode }
-
-                    drawContext.canvas.withSaveLayer(drawContext.size.toRect(), paint) {
-                         canvas.withSave {
-                             canvasStrokeRenderer.draw(
-                                 stroke = stroke,
-                                 canvas = this,
-                                 strokeToScreenTransform = Matrix() 
-                             )
-                         }
+                    // FreehandAlgorithm handles single point (returns circle) and short strokes
+                    if (outline.isNotEmpty()) {
+                        val livePath = FreehandRenderer.createSmoothPath(outline)
+                        drawPath(livePath, displayColor)
                     }
                 }
             }
-            
-            // InProgressStrokes
-            // Removed key(currentBrush) to allow internal updates without killing the component
-            textureStore?.let {
-                InProgressStrokes(
-                    defaultBrush = currentBrush,
-                    nextBrush = onGetNextBrush,
-                    onStrokesFinished = onStrokesFinished,
-                    textureBitmapStore = it
-                )
-            } ?: InProgressStrokes(
-                defaultBrush = currentBrush,
-                nextBrush = onGetNextBrush,
-                onStrokesFinished = onStrokesFinished,
-            )
-            
-            // Eraser Logic
-             if (isEraserMode) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            detectDragGestures(
-                                onDragStart = { onEraseStart() },
-                                onDragEnd = { onEraseEnd() }
-                            ) { change, _ ->
-                                onErase(change.position.x, change.position.y)
-                                change.consume()
-                            }
-                        }
-                )
-             }
         }
     }
 }
 
-@Preview
-@Composable
-fun DrawingSurfacePreview() {
-    val canvasStrokeRenderer = remember { CanvasStrokeRenderer.create() }
-    var currentBrush by remember {
-        mutableStateOf(
-            Brush.createWithComposeColor(
-                family = StockBrushes.highlighter(),
-                color = androidx.compose.ui.graphics.Color.Blue,
-                size = 10F,
-                epsilon = 0.01F
-            )
-        )
-    }
+// Helper functions
 
-    DrawingSurface(
-        strokes = emptyList(),
-        canvasStrokeRenderer = canvasStrokeRenderer,
-        onStrokesFinished = {},
-        onErase = { _, _ -> },
-        onEraseStart = {},
-        onEraseEnd = {},
-        currentBrush = currentBrush,
-        onGetNextBrush = { currentBrush },
-        isEraserMode = false,
-        backgroundImageUri = null,
-        onStartDrag = {}
-    )
+fun getThinningFactor(type: String): Float {
+    return when (type) {
+        "Fountain" -> 0.5f
+        "Calligraphy" -> 0.6f
+        "Pencil" -> 0.3f
+        "Ballpoint" -> 0f      // No pressure sensitivity
+        "Marker" -> 0f
+        "Highlighter" -> 0f
+        else -> 0.4f
+    }
+}
+
+fun getDisplayColor(type: String, baseColor: Color): Color {
+    return when (type) {
+        "Highlighter" -> baseColor.copy(alpha = 0.35f)
+        "Marker" -> baseColor.copy(alpha = 0.6f)
+        "Pencil" -> baseColor.copy(alpha = 0.8f)
+        else -> baseColor
+    }
 }
