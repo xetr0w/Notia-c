@@ -2,6 +2,11 @@ package com.notianotes.app.ink
 
 import android.annotation.SuppressLint
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
@@ -16,11 +21,6 @@ import coil3.compose.AsyncImage
 import com.notianotes.app.freehand.FreehandAlgorithm
 import com.notianotes.app.freehand.StrokePoint
 import com.notianotes.app.render.FreehandRenderer
-import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 
 /**
  * Completed stroke with cached path
@@ -111,27 +111,57 @@ fun DrawingSurface(
                             // Start drawing
                             isDrawing = true
                             currentPoints.clear()
-                            currentPoints.add(StrokePoint(
+                            val startPoint = StrokePoint(
                                 x = down.position.x,
                                 y = down.position.y,
                                 pressure = down.pressure.coerceIn(0.1f, 1f),
                                 time = System.currentTimeMillis()
-                            ))
+                            )
+                            currentPoints.add(startPoint)
                             down.consume()
+                            
+                            // Son bilinen pozisyonu takip et
+                            var lastPosition = down.position
+                            var lastPressure = down.pressure
                             
                             // Continue drawing
                             while (true) {
                                 val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                val change = event.changes.firstOrNull { it.id == down.id }
                                 
-                                if (!change.pressed) break
+                                if (change == null || !change.pressed) {
+                                    // DÜZELTME 1: Kalem kaldırıldı!
+                                    // Eğer son kaydedilen nokta ile kalemin kalktığı nokta arasında fark varsa,
+                                    // o son minik hareketi de ekle. Yoksa stroke ucu eksik kalır.
+                                    val lastRecorded = currentPoints.lastOrNull()
+                                    if (lastRecorded != null) {
+                                        val dist = (lastRecorded.x - lastPosition.x) * (lastRecorded.x - lastPosition.x) + 
+                                                   (lastRecorded.y - lastPosition.y) * (lastRecorded.y - lastPosition.y)
+                                        // Çok çok küçük değilse ekle (0.1f bile olsa ekle ki yön belli olsun)
+                                        if (dist > 0.1f) {
+                                            currentPoints.add(StrokePoint(
+                                                x = lastPosition.x,
+                                                y = lastPosition.y,
+                                                pressure = lastPressure.coerceIn(0.1f, 1f),
+                                                time = System.currentTimeMillis()
+                                            ))
+                                        }
+                                    }
+                                    break
+                                }
                                 
+                                // Pozisyonu güncelle
+                                lastPosition = change.position
+                                lastPressure = change.pressure
+
                                 // Add point if moved enough
                                 val last = currentPoints.lastOrNull()
                                 val dx = change.position.x - (last?.x ?: 0f)
                                 val dy = change.position.y - (last?.y ?: 0f)
                                 
-                                if (last == null || (dx * dx + dy * dy) > 4f) { // min 2px distance
+                                // DÜZELTME 2: Hassasiyeti artırdım (4f -> 1f).
+                                // Daha sık nokta alırsak polygonal görüntü azalır.
+                                if (last == null || (dx * dx + dy * dy) > 1f) { 
                                     currentPoints.add(StrokePoint(
                                         x = change.position.x,
                                         y = change.position.y,
@@ -187,7 +217,6 @@ fun DrawingSurface(
                 }
                 
                 // Draw current stroke (wet/live)
-                // Read the list to trigger recomposition
                 val points = currentPoints.toList()
                 if (points.isNotEmpty()) {
                     val outline = FreehandAlgorithm.getStrokeOutline(
@@ -196,7 +225,6 @@ fun DrawingSurface(
                         thinning = thinning
                     )
                     
-                    // FreehandAlgorithm handles single point (returns circle) and short strokes
                     if (outline.isNotEmpty()) {
                         val livePath = FreehandRenderer.createSmoothPath(outline)
                         drawPath(livePath, displayColor)
@@ -207,14 +235,13 @@ fun DrawingSurface(
     }
 }
 
-// Helper functions
-
+// Helper functions (Aynı kalabilir)
 fun getThinningFactor(type: String): Float {
     return when (type) {
         "Fountain" -> 0.5f
         "Calligraphy" -> 0.6f
         "Pencil" -> 0.3f
-        "Ballpoint" -> 0f      // No pressure sensitivity
+        "Ballpoint" -> 0f      
         "Marker" -> 0f
         "Highlighter" -> 0f
         else -> 0.4f
